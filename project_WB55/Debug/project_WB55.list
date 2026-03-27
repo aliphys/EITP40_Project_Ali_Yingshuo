@@ -35,13 +35,13 @@ Idx Name          Size      VMA       LMA       File off  Algn
                   CONTENTS, READONLY, DEBUGGING, OCTETS
  15 .debug_line   00015cdf  00000000  00000000  0004a1df  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 16 .debug_str    000da843  00000000  00000000  0005febe  2**0
+ 16 .debug_str    000da851  00000000  00000000  0005febe  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 17 .comment      00000043  00000000  00000000  0013a701  2**0
+ 17 .comment      00000043  00000000  00000000  0013a70f  2**0
                   CONTENTS, READONLY
- 18 .debug_frame  00006d20  00000000  00000000  0013a744  2**2
+ 18 .debug_frame  00006d20  00000000  00000000  0013a754  2**2
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 19 .debug_line_str 00000068  00000000  00000000  00141464  2**0
+ 19 .debug_line_str 00000076  00000000  00000000  00141474  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
 
 Disassembly of section .text:
@@ -5134,7 +5134,7 @@ void protocol_after_infer_processed(void)
     if (current_epoch < NN_EPOCHS)
  8002b3e:	4b12      	ldr	r3, [pc, #72]	@ (8002b88 <protocol_after_infer_processed+0x58>)
  8002b40:	681b      	ldr	r3, [r3, #0]
- 8002b42:	2b0e      	cmp	r3, #14
+ 8002b42:	2b0b      	cmp	r3, #11
  8002b44:	d80e      	bhi.n	8002b64 <protocol_after_infer_processed+0x34>
     {
         protocol_mode = PROTOCOL_MODE_TRAIN;

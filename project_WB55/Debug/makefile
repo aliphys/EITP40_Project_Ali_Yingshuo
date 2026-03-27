@@ -61,8 +61,8 @@ all: main-build
 main-build: project_WB55.elf secondary-outputs
 
 # Tool invocations
-project_WB55.elf project_WB55.map: $(OBJS) $(USER_OBJS) C:\Users\yings\STM32CubeIDE\workspace_1.17.0\project_WB55\STM32WB55RGVX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "project_WB55.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"C:\Users\yings\STM32CubeIDE\workspace_1.17.0\project_WB55\STM32WB55RGVX_FLASH.ld" --specs=nosys.specs -Wl,-Map="project_WB55.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+project_WB55.elf project_WB55.map: $(OBJS) $(USER_OBJS) C:\Users\user\Documents\GitHub\EITP40_Project_Ali_Yingshuo\project_WB55\STM32WB55RGVX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "project_WB55.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"C:\Users\user\Documents\GitHub\EITP40_Project_Ali_Yingshuo\project_WB55\STM32WB55RGVX_FLASH.ld" --specs=nosys.specs -Wl,-Map="project_WB55.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 
