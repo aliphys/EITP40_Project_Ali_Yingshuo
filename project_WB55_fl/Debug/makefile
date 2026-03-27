@@ -35,34 +35,34 @@ $(wildcard ../makefile.init) \
 $(wildcard ../makefile.targets) \
 
 
-BUILD_ARTIFACT_NAME := project_WB55
+BUILD_ARTIFACT_NAME := project_WB55_fl
 BUILD_ARTIFACT_EXTENSION := elf
 BUILD_ARTIFACT_PREFIX :=
 BUILD_ARTIFACT := $(BUILD_ARTIFACT_PREFIX)$(BUILD_ARTIFACT_NAME)$(if $(BUILD_ARTIFACT_EXTENSION),.$(BUILD_ARTIFACT_EXTENSION),)
 
 # Add inputs and outputs from these tool invocations to the build variables 
 EXECUTABLES += \
-project_WB55.elf \
+project_WB55_fl.elf \
 
 MAP_FILES += \
-project_WB55.map \
+project_WB55_fl.map \
 
 SIZE_OUTPUT += \
 default.size.stdout \
 
 OBJDUMP_LIST += \
-project_WB55.list \
+project_WB55_fl.list \
 
 
 # All Target
 all: main-build
 
 # Main-build Target
-main-build: project_WB55.elf secondary-outputs
+main-build: project_WB55_fl.elf secondary-outputs
 
 # Tool invocations
-project_WB55.elf project_WB55.map: $(OBJS) $(USER_OBJS) C:\Users\yings\STM32CubeIDE\workspace_1.17.0\project_WB55\STM32WB55RGVX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "project_WB55.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"C:\Users\yings\STM32CubeIDE\workspace_1.17.0\project_WB55\STM32WB55RGVX_FLASH.ld" --specs=nosys.specs -Wl,-Map="project_WB55.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+project_WB55_fl.elf project_WB55_fl.map: $(OBJS) $(USER_OBJS) C:\Users\user\Documents\GitHub\EITP40_Project_Ali_Yingshuo\project_WB55_fl\STM32WB55RGVX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "project_WB55_fl.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"C:\Users\user\Documents\GitHub\EITP40_Project_Ali_Yingshuo\project_WB55_fl\STM32WB55RGVX_FLASH.ld" --specs=nosys.specs -Wl,-Map="project_WB55_fl.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 
@@ -71,14 +71,14 @@ default.size.stdout: $(EXECUTABLES) makefile objects.list $(OPTIONAL_TOOL_DEPS)
 	@echo 'Finished building: $@'
 	@echo ' '
 
-project_WB55.list: $(EXECUTABLES) makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-objdump -h -S $(EXECUTABLES) > "project_WB55.list"
+project_WB55_fl.list: $(EXECUTABLES) makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-objdump -h -S $(EXECUTABLES) > "project_WB55_fl.list"
 	@echo 'Finished building: $@'
 	@echo ' '
 
 # Other Targets
 clean:
-	-$(RM) default.size.stdout project_WB55.elf project_WB55.list project_WB55.map
+	-$(RM) default.size.stdout project_WB55_fl.elf project_WB55_fl.list project_WB55_fl.map
 	-@echo ' '
 
 secondary-outputs: $(SIZE_OUTPUT) $(OBJDUMP_LIST)
