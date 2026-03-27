@@ -1,0 +1,528 @@
+/*
+ * protocol_uart.c
+ *
+ *  Created on: Feb 19, 2026
+ *      Author: yings
+ */
+
+#include <save.h>
+#include "main.h"
+#include "protocol_uart.h"
+#include "stm32wbxx_nucleo.h"
+#include <string.h>
+#include "config.h"
+
+#define CODE_START_OF_FRAME_0 0xAA
+#define CODE_START_OF_FRAME_1 0x55
+
+#define CODE_REQUEST_DATA      	0x01	// STM32 -> PC: Request data
+#define CODE_DATA              	0x02	// PC -> STM32: Data
+#define CODE_ACKNOWLEDGEMENT   	0x03	// STM32 -> PC: Acknowledgement
+#define CODE_FINISH 			0x04	// PC -> STM32: Finish
+#define CODE_END    			0x05	// STM32 -> PC: End (Kill Python)
+#define CODE_RESULTS_TRAIN      0x06	// STM32 -> PC: Results
+#define CODE_REQUEST_VAL   		0x07   	// STM32 -> PC: Request val data
+#define CODE_VAL_ACC       		0x08   	// STM32 -> PC: Inference Accuracy
+#define CODE_REQUEST_TEST      	0x09	// STM32 -> PC: Request test data
+#define CODE_TEST_PRED        	0x0A	// STM32 -> PC: Inference Accuracy
+
+// label 1 byte + 80 float * 4 bytes
+#if USE_BACKPROP
+#define EXPECTED_LENGTH (4 * NN_IN + 1)
+#elif USE_FF
+#define EXPECTED_LENGTH (4 * NN_FF_IN + 1)
+#else
+#error "No model selected"
+#endif
+
+// Waiting time before sending new request
+#define REQ_WAITING_PERIOD 200u
+
+static UART_HandleTypeDef *global_hlpuart;
+static uint8_t global_rx_byte;
+
+static volatile uint8_t global_flag_pending = 0;  			// 1: something is waiting to be done
+static volatile uint8_t global_acknowledgement_status = 0;	// 0: everything is good before acknowledgement; 1: there is an error
+static volatile uint16_t global_sequence_number = 0;		// request sequence
+static volatile uint16_t global_ack_sequence_number = 0; 	// acknowledgement sequence
+static volatile uint16_t global_current_data_sequence = 0;	// current data
+static volatile uint32_t global_last_request_tick = 0;		// Used for periodical request time
+static volatile uint8_t	protocol_idle = 0;					// 1: idle
+static volatile uint8_t protocol_pause_request = 0;  		// 1: stop sending request until training done
+static volatile uint8_t protocol_infer_finished = 0;
+static volatile uint8_t protocol_train_finished = 0;
+static volatile uint8_t protocol_test_finished = 0;
+static uint32_t current_epoch = 0;
+
+uint8_t protocol_is_infer_finished(void)
+{
+    return protocol_infer_finished;
+}
+
+void protocol_clear_infer_finished(void)
+{
+    protocol_infer_finished = 0;
+}
+
+uint8_t protocol_is_train_finished(void)
+{
+    return protocol_train_finished;
+}
+
+void protocol_clear_train_finished(void)
+{
+    protocol_train_finished = 0;
+}
+
+typedef enum {
+    PROTOCOL_MODE_TRAIN = 0,
+    PROTOCOL_MODE_VAL   = 1,
+    PROTOCOL_MODE_TEST  = 2
+} protocol_mode_t;
+#if (NN_EPOCHS == 0)
+static volatile protocol_mode_t protocol_mode = PROTOCOL_MODE_TEST;
+#else
+static volatile protocol_mode_t protocol_mode = PROTOCOL_MODE_TRAIN;
+#endif
+
+// FSM by byte: Start of frame - type - sequence - length - data - crc
+typedef enum {
+    STATE_CODE_START_OF_FRAME_0, STATE_CODE_START_OF_FRAME_1,
+    STATE_DATA_TYPE,
+    STATE_SEQUENCE_0, STATE_SEQUENCE_1,
+    STATE_LENGTH_0, STATE_LENGTH_1,
+    STATE_DATA,
+    STATE_CRC_0, STATE_CRC_1
+} st_t;
+
+static st_t state = STATE_CODE_START_OF_FRAME_0;
+
+static uint8_t  data_type;
+static uint16_t message_sequence;
+static uint16_t message_length;
+static uint16_t message_counter;
+static uint8_t  data[EXPECTED_LENGTH];
+static uint16_t crc;
+
+static void handle_message(void);
+static void send_frame(uint8_t type, uint16_t seq, const uint8_t *dt, uint16_t len);
+
+// CCITT 16-bit crc check
+static uint16_t crc16_ccitt_update(uint16_t c, const uint8_t *data, uint16_t len)
+{
+    for (uint16_t i = 0; i < len; i++){
+        c ^= (uint16_t)data[i] << 8;
+        for (uint8_t b = 0; b < 8; b++){
+            if (c & 0x8000)
+                c = (uint16_t)((c << 1) ^ 0x1021);
+            else
+                c = (uint16_t)(c << 1);
+        }
+    }
+    return c;
+}
+
+// Initialization
+void protocol_init(UART_HandleTypeDef *hlpuart)
+{
+    global_hlpuart = hlpuart;
+    state = STATE_CODE_START_OF_FRAME_0;
+
+    global_flag_pending = 0;
+    global_acknowledgement_status = 0;
+    global_sequence_number = 0;
+    global_ack_sequence_number = 0;
+    global_current_data_sequence = 0;
+    protocol_idle = 0;
+    protocol_pause_request = 0;
+    protocol_infer_finished = 0;
+    protocol_train_finished = 0;
+    protocol_test_finished = 0;
+    current_epoch = 0;
+
+#if (NN_EPOCHS == 0)
+    protocol_mode = PROTOCOL_MODE_TEST;
+#else
+    protocol_mode = PROTOCOL_MODE_TRAIN;
+#endif
+
+    global_last_request_tick = HAL_GetTick();
+}
+
+// Ready to receive data
+void protocol_start_uart_rx(void)
+{
+    HAL_UART_Receive_IT(global_hlpuart, &global_rx_byte, 1);
+}
+
+// LPUART Interrupt function
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *hlpuart)
+{
+    if (hlpuart == global_hlpuart)
+    {
+        protocol_uart_rx_byte(global_rx_byte);
+        HAL_UART_Receive_IT(global_hlpuart, &global_rx_byte, 1);
+    }
+}
+
+// Message analysis
+void protocol_uart_rx_byte(uint8_t message_byte)
+{
+    switch (state)
+    {
+    case STATE_CODE_START_OF_FRAME_0:
+        state = (message_byte == CODE_START_OF_FRAME_0) ? STATE_CODE_START_OF_FRAME_1 : STATE_CODE_START_OF_FRAME_0;
+        break;
+
+    case STATE_CODE_START_OF_FRAME_1:
+        state = (message_byte == CODE_START_OF_FRAME_1) ? STATE_DATA_TYPE : STATE_CODE_START_OF_FRAME_0;
+        break;
+
+    case STATE_DATA_TYPE:
+        data_type = message_byte;
+        state = STATE_SEQUENCE_0;
+        break;
+
+    case STATE_SEQUENCE_0:
+        message_sequence = message_byte;
+        state = STATE_SEQUENCE_1;
+        break;
+
+    case STATE_SEQUENCE_1:
+        message_sequence |= ((uint16_t)message_byte << 8);
+        state = STATE_LENGTH_0;
+        break;
+
+    case STATE_LENGTH_0:
+        message_length = message_byte;
+        state = STATE_LENGTH_1;
+        break;
+
+    case STATE_LENGTH_1:
+        message_length |= ((uint16_t)message_byte << 8);
+        message_counter = 0;
+
+        // If the message is longer than the data buffer, throw it away.
+        if (message_length > sizeof(data)) {
+            state = STATE_CODE_START_OF_FRAME_0;
+        } else {
+            state = (message_length == 0) ? STATE_CRC_0 : STATE_DATA;
+        }
+        break;
+
+    case STATE_DATA:
+        data[message_counter++] = message_byte;
+        if (message_counter >= message_length)
+            state = STATE_CRC_0;
+        break;
+
+    case STATE_CRC_0:
+        crc = message_byte;
+        state = STATE_CRC_1;
+        break;
+
+    case STATE_CRC_1:
+        crc |= ((uint16_t)message_byte << 8);
+        handle_message();
+        state = STATE_CODE_START_OF_FRAME_0;
+        break;
+    }
+}
+
+static void handle_message(void)
+{
+    uint8_t header_without_sof[5];
+    header_without_sof[0] = data_type;
+    header_without_sof[1] = (uint8_t)(message_sequence & 0xFF);
+    header_without_sof[2] = (uint8_t)(message_sequence >> 8);
+    header_without_sof[3] = (uint8_t)(message_length & 0xFF);
+    header_without_sof[4] = (uint8_t)(message_length >> 8);
+
+    // calculate crc
+    uint16_t crc_calculated = 0xFFFF;
+    crc_calculated = crc16_ccitt_update(crc_calculated, header_without_sof, 5);
+    if (message_length && data) {
+    	crc_calculated = crc16_ccitt_update(crc_calculated, data, message_length);
+	}
+
+    // crc check, if fail: re-send request
+    if (crc_calculated != crc)
+    {
+    	global_acknowledgement_status = 1;
+		global_ack_sequence_number = message_sequence;
+		global_flag_pending = 1;
+        return;
+    }
+
+    if (data_type == CODE_FINISH)
+    {
+        if (protocol_mode == PROTOCOL_MODE_TRAIN)
+        {
+            protocol_train_finished = 1;
+            protocol_mode = PROTOCOL_MODE_VAL;
+            global_sequence_number = 0;
+            protocol_pause_request = 0;
+            global_last_request_tick = 0;
+            protocol_send_infer_req();
+        }
+        else if (protocol_mode == PROTOCOL_MODE_VAL)
+        {
+            protocol_infer_finished = 1;
+        }
+        else if (protocol_mode == PROTOCOL_MODE_TEST)
+        {
+            protocol_test_finished = 1;
+        }
+        return;
+    }
+
+    // Data
+    if (data_type != CODE_DATA)
+        return;
+
+    // Length check, if fail: re-send request
+    if (message_length != EXPECTED_LENGTH)
+    {
+    	global_acknowledgement_status = 1;
+		global_ack_sequence_number = message_sequence;
+		global_flag_pending = 1;
+        return;
+    }
+
+    // Sequence check
+    if (message_sequence == global_sequence_number)		// correct data
+    {
+    	global_current_data_sequence = message_sequence;
+
+        // Expected new packet
+    	save_store_sample(data[0], &data[1], EXPECTED_LENGTH - 1);
+        protocol_pause_request = 1;		// Stop and train
+        HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);
+
+        global_acknowledgement_status = 0;
+        global_ack_sequence_number = global_sequence_number;
+        global_flag_pending = 1;
+        return;
+    }
+
+    // old package, send acknowledgement again but not store it.
+    if (message_sequence < global_sequence_number)
+    {
+        global_acknowledgement_status = 0;
+        global_ack_sequence_number = message_sequence;
+        global_flag_pending = 1;
+        return;
+    }
+
+    // Other cases
+    global_acknowledgement_status = 1;
+    global_ack_sequence_number = message_sequence;
+    global_flag_pending = 1;
+}
+
+// send message: start of frame - type - sequence - sequence - data - crc
+static void send_frame(uint8_t type, uint16_t sequence, const uint8_t *data, uint16_t length)
+{
+    uint8_t header[7];
+    header[0] = CODE_START_OF_FRAME_0;
+    header[1] = CODE_START_OF_FRAME_1;
+    header[2] = type;
+    header[3] = (uint8_t)(sequence & 0xFF);
+    header[4] = (uint8_t)(sequence >> 8);
+    header[5] = (uint8_t)(length & 0xFF);
+    header[6] = (uint8_t)(length >> 8);
+
+    uint16_t crc = 0xFFFF;
+    crc = crc16_ccitt_update(crc, &header[2], 5);
+    if (length && data) {
+    	crc = crc16_ccitt_update(crc, data, length);
+	}
+    uint8_t crcs[2] = { (uint8_t)(crc & 0xFF), (uint8_t)(crc >> 8) };
+
+    HAL_UART_Transmit(global_hlpuart, header, sizeof(header), 1000);
+    if (length && data)
+        HAL_UART_Transmit(global_hlpuart, (uint8_t*)data, length, 1000);
+    HAL_UART_Transmit(global_hlpuart, crcs, 2, 1000);
+}
+
+// Send request (REQ(expected_seq))
+void protocol_send_req(void)
+{
+    send_frame(CODE_REQUEST_DATA, global_sequence_number, NULL, 0);
+    global_last_request_tick = HAL_GetTick();
+}
+
+// Idle state: without doing anything
+
+void protocol_set_idle(uint8_t idle)
+{
+    uint8_t new_idle = idle ? 1 : 0;	// prevent continuously click SW3
+    if (protocol_idle == new_idle) {
+        return;
+    }
+    protocol_idle = new_idle;
+
+    if (protocol_idle) {
+        protocol_pause_request = 0;
+//        BSP_LED_On(LED_GREEN);
+        return;
+    }
+    protocol_pause_request = 0;
+    global_last_request_tick = 0;
+    protocol_send_req();
+//    BSP_LED_Off(LED_GREEN);
+}
+
+// Shut down Python
+void protocol_send_end(void)
+{
+    send_frame(CODE_END, 0xFFFF, NULL, 0);
+}
+
+// Send loss
+void protocol_send_results(float loss, float probability, uint8_t correct)
+{
+    uint8_t results[9];
+
+    memcpy(&results[0], &loss, 4);
+    memcpy(&results[4], &probability, 4);
+    results[8] = correct ? 1 : 0;
+
+    send_frame(CODE_RESULTS_TRAIN, global_sequence_number, results, (uint16_t)sizeof(results));
+}
+
+// Used in the while loop (call frequently)
+void protocol_while(void)
+{
+    // check acknowledgement flag
+    if (global_flag_pending)
+    {
+        uint8_t status = global_acknowledgement_status;
+        uint16_t seq = global_ack_sequence_number;
+
+        send_frame(CODE_ACKNOWLEDGEMENT, seq, &status, 1);
+
+        if (status == 0 && seq == global_sequence_number)	// correct data received
+        {
+            global_sequence_number++;
+        }
+        global_flag_pending = 0;
+    }
+
+    // Idle = 1: do nothing
+    if (protocol_idle)
+        return;
+
+    // Periodically Re-send Request if the data does not arrive
+    uint32_t now = HAL_GetTick();
+    if (!protocol_pause_request)
+    {
+        if ((uint32_t)(now - global_last_request_tick) >= REQ_WAITING_PERIOD)
+        {
+            if (protocol_mode == PROTOCOL_MODE_TRAIN)
+                protocol_send_req();
+            else if (protocol_mode == PROTOCOL_MODE_VAL)
+                protocol_send_infer_req();
+            else
+                protocol_send_test_req();
+        }
+    }
+}
+
+// Request next sample when training is done
+void protocol_resume_requesting(void)
+{
+    if (protocol_idle)
+        return;
+
+    protocol_pause_request = 0;
+
+    if (protocol_mode == PROTOCOL_MODE_TRAIN)
+        protocol_send_req();
+    else if (protocol_mode == PROTOCOL_MODE_VAL)
+        protocol_send_infer_req();
+    else
+        protocol_send_test_req();
+}
+
+void protocol_send_infer_req(void)
+{
+    send_frame(CODE_REQUEST_VAL, global_sequence_number, NULL, 0);
+    global_last_request_tick = HAL_GetTick();
+}
+
+uint8_t protocol_is_inference_mode(void)
+{
+    return (protocol_mode == PROTOCOL_MODE_VAL) ? 1 : 0;
+}
+
+void protocol_send_inference_acc(float acc)
+{
+    uint8_t payload[4];
+    memcpy(payload, &acc, 4);
+    send_frame(CODE_VAL_ACC, global_sequence_number, payload, 4);
+}
+
+void protocol_after_infer_processed(void)
+{
+    current_epoch++;
+
+    if (current_epoch < NN_EPOCHS)
+    {
+        protocol_mode = PROTOCOL_MODE_TRAIN;
+        global_sequence_number = 0;
+        protocol_pause_request = 0;
+        global_last_request_tick = 0;
+        protocol_send_req();
+    }
+    else
+    {
+		#if NN_SAVE_NEW_WEIGHTS_AFTER_TRAIN
+            (void)weights_flash_load();
+        #endif
+
+        protocol_mode = PROTOCOL_MODE_TEST;
+        global_sequence_number = 0;
+        protocol_pause_request = 0;
+        global_last_request_tick = 0;
+        protocol_send_test_req();
+    }
+}
+
+uint8_t protocol_is_test_finished(void)
+{
+    return protocol_test_finished;
+}
+
+void protocol_clear_test_finished(void)
+{
+    protocol_test_finished = 0;
+}
+
+uint8_t protocol_is_test_mode(void)
+{
+    return (protocol_mode == PROTOCOL_MODE_TEST) ? 1 : 0;
+}
+
+void protocol_send_test_req(void)
+{
+    send_frame(CODE_REQUEST_TEST, global_sequence_number, NULL, 0);
+    global_last_request_tick = HAL_GetTick();
+}
+
+void protocol_send_test_prediction(float probability, uint8_t pred)
+{
+    uint8_t payload[5];
+    memcpy(&payload[0], &probability, 4);
+    payload[4] = pred ? 1 : 0;
+
+    send_frame(CODE_TEST_PRED, global_current_data_sequence, payload, 5);
+}
+
+void protocol_after_test_processed(void)
+{
+//    protocol_send_end();
+    protocol_set_idle(1);
+}
+
+
