@@ -12,6 +12,7 @@
 #include <string.h>
 #include "config.h"
 #include "weights_flash.h"
+#include "nn.h"
 
 #define CODE_START_OF_FRAME_0 0xAA
 #define CODE_START_OF_FRAME_1 0x55
@@ -34,11 +35,16 @@
 #define CODE_CTRL_MODE        	0x0F	// PC -> STM32: set mode (payload 1 byte: 0/1/2)
 #define CODE_CTRL_EPOCHS      	0x10	// PC -> STM32: set runtime epochs (payload uint16)
 #define CODE_CTRL_STATUS      	0x11	// STM32 -> PC: status report
+#define CODE_REQUEST_WEIGHTS   0x12	// PC -> STM32: Request weights
+#define CODE_WEIGHTS           0x13	// STM32 -> PC: Send weights
+#define CODE_SET_WEIGHTS       0x14	// PC -> STM32: Set weights
 // label 1 byte + 80 float * 4 bytes
 #if USE_BACKPROP
 #define EXPECTED_LENGTH (4 * NN_IN + 1)
+#define EXPECTED_WEIGHTS_LENGTH ((NN_H1 * NN_IN + NN_H1 + NN_H2 * NN_H1 + NN_H2 + NN_H2 + 1) * 4)
 #elif USE_FF
 #define EXPECTED_LENGTH (4 * NN_FF_IN + 1)
+#define EXPECTED_WEIGHTS_LENGTH ((NN_FF_H1 * NN_FF_IN + NN_FF_H1 + NN_FF_H2 * NN_FF_H1 + NN_FF_H2 + NN_FF_H2 + 1) * 4)
 #else
 #error "No model selected"
 #endif
@@ -117,7 +123,7 @@ static uint8_t  data_type;
 static uint16_t message_sequence;
 static uint16_t message_length;
 static uint16_t message_counter;
-static uint8_t  data[EXPECTED_LENGTH];
+static uint8_t  data[EXPECTED_WEIGHTS_LENGTH];
 static uint16_t crc;
 
 static void handle_message(void);
@@ -223,9 +229,13 @@ void protocol_uart_rx_byte(uint8_t message_byte)
         message_length |= ((uint16_t)message_byte << 8);
         message_counter = 0;
 
-        // If the message is longer than the data buffer, throw it away.
+        // If the message is longer than the data buffer, throw it away unless it is SET_WEIGHTS and allowed.
         if (message_length > sizeof(data)) {
-            state = STATE_CODE_START_OF_FRAME_0;
+            if (data_type == CODE_SET_WEIGHTS && message_length <= EXPECTED_WEIGHTS_LENGTH) {
+                state = (message_length == 0) ? STATE_CRC_0 : STATE_DATA;
+            } else {
+                state = STATE_CODE_START_OF_FRAME_0;
+            }
         } else {
             state = (message_length == 0) ? STATE_CRC_0 : STATE_DATA;
         }
@@ -323,6 +333,35 @@ static void handle_message(void)
     if (data_type == CODE_CTRL_STATUS)
     {
         protocol_send_status();
+        return;
+    }
+
+    if (data_type == CODE_REQUEST_WEIGHTS)
+    {
+        protocol_send_weights();
+        return;
+    }
+
+    if (data_type == CODE_SET_WEIGHTS)
+    {
+        if (message_length == nn_state_size())
+        {
+            if (nn_state_import(data, message_length))
+            {
+                (void)weights_flash_save(); // optional flash persistence
+                protocol_send_status();
+            }
+            else
+            {
+                uint8_t status = 1; // error
+                send_frame(CODE_ACKNOWLEDGEMENT, message_sequence, &status, 1);
+            }
+        }
+        else
+        {
+            uint8_t status = 1; // error
+            send_frame(CODE_ACKNOWLEDGEMENT, message_sequence, &status, 1);
+        }
         return;
     }
 
@@ -543,6 +582,8 @@ void protocol_after_infer_processed(void)
 {
     current_epoch++;
 
+    protocol_send_weights();
+
     if (current_epoch < protocol_runtime_epochs)
     {
         protocol_mode = PROTOCOL_MODE_TRAIN;
@@ -669,6 +710,13 @@ void protocol_send_status(void)
     payload[8] = (uint8_t)((current_epoch >> 24) & 0xFF);
 
     send_frame(CODE_CTRL_STATUS, global_sequence_number, payload, sizeof(payload));
+}
+
+void protocol_send_weights(void)
+{
+    uint8_t buffer[nn_state_size()];
+    nn_state_export(buffer);
+    send_frame(CODE_WEIGHTS, current_epoch, buffer, nn_state_size());
 }
 
 void protocol_after_test_processed(void)
