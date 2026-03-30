@@ -55,13 +55,6 @@ volatile uint8_t sw1_flag = 0;
 volatile uint8_t sw2_flag = 0;
 volatile uint8_t sw3_flag = 0;
 
-typedef enum {
-  FL_ROLE_CLIENT = 0,
-  FL_ROLE_SERVER = 1
-} fl_role_t;
-
-volatile fl_role_t fl_role = FL_ROLE_CLIENT;
-
 static uint32_t infer_correct = 0;
 static uint32_t infer_total = 0;
 
@@ -80,20 +73,6 @@ static void MX_LPUART1_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
-static void fl_update_role_led(fl_role_t role)
-{
-  if (role == FL_ROLE_SERVER)
-  {
-    BSP_LED_Off(LED_GREEN);
-    BSP_LED_On(LED_RED);
-  }
-  else
-  {
-    BSP_LED_On(LED_GREEN);
-    BSP_LED_Off(LED_RED);
-  }
-}
 
 /* USER CODE END 0 */
 
@@ -146,18 +125,14 @@ int main(void)
 	  (void)weights_flash_load();
   #endif
 
-  #if (NN_EPOCHS == 0)
-      protocol_send_test_req();
-  #else
-      protocol_send_req();
-  #endif
+  // PC-driven mode: PC should send CODE_CTRL_START to begin processing
+  protocol_stop_processing();
   /* USER CODE END 2 */
 
   /* Initialize leds */
   BSP_LED_Init(LED_BLUE);
   BSP_LED_Init(LED_GREEN);
   BSP_LED_Init(LED_RED);
-  fl_update_role_led(fl_role);
 
   /* Initialize USER push-button, will be used to trigger an interrupt each time it's pressed.*/
   BSP_PB_Init(BUTTON_SW1, BUTTON_MODE_EXTI);
@@ -321,14 +296,10 @@ int main(void)
 
 	  if(sw2_flag){
 		  sw2_flag = 0;
-      fl_role = FL_ROLE_SERVER;
-      fl_update_role_led(fl_role);
-      protocol_set_idle(1);
+		  protocol_set_idle(1);
 	  }
 	  if(sw3_flag){
 		  sw3_flag = 0;
-      fl_role = FL_ROLE_CLIENT;
-      fl_update_role_led(fl_role);
 		  protocol_set_idle(0);
 	  }
 	}

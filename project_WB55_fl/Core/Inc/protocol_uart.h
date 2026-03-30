@@ -33,6 +33,15 @@ void protocol_send_test_req(void);
 void protocol_send_test_prediction(float probability, uint8_t pred);
 uint8_t protocol_is_test_mode(void);
 
+// PC-driven control API
+void protocol_set_runtime_epochs(uint32_t epochs);
+void protocol_set_control_mode(uint8_t mode);
+void protocol_start_processing(void);
+void protocol_stop_processing(void);
+void protocol_pause_processing(void);
+void protocol_resume_processing(void);
+uint8_t protocol_is_running(void);
+
 uint8_t protocol_is_test_finished(void);
 void protocol_clear_test_finished(void);
 void protocol_after_test_processed(void);

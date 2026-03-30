@@ -11,6 +11,7 @@
 #include "stm32wbxx_nucleo.h"
 #include <string.h>
 #include "config.h"
+#include "weights_flash.h"
 
 #define CODE_START_OF_FRAME_0 0xAA
 #define CODE_START_OF_FRAME_1 0x55
@@ -25,7 +26,14 @@
 #define CODE_VAL_ACC       		0x08   	// STM32 -> PC: Inference Accuracy
 #define CODE_REQUEST_TEST      	0x09	// STM32 -> PC: Request test data
 #define CODE_TEST_PRED        	0x0A	// STM32 -> PC: Inference Accuracy
-
+// PC control commands
+#define CODE_CTRL_START       	0x0B	// PC -> STM32: start processing
+#define CODE_CTRL_STOP        	0x0C	// PC -> STM32: stop processing
+#define CODE_CTRL_PAUSE       	0x0D	// PC -> STM32: pause processing
+#define CODE_CTRL_RESUME      	0x0E	// PC -> STM32: resume processing
+#define CODE_CTRL_MODE        	0x0F	// PC -> STM32: set mode (payload 1 byte: 0/1/2)
+#define CODE_CTRL_EPOCHS      	0x10	// PC -> STM32: set runtime epochs (payload uint16)
+#define CODE_CTRL_STATUS      	0x11	// STM32 -> PC: status report
 // label 1 byte + 80 float * 4 bytes
 #if USE_BACKPROP
 #define EXPECTED_LENGTH (4 * NN_IN + 1)
@@ -53,6 +61,12 @@ static volatile uint8_t protocol_infer_finished = 0;
 static volatile uint8_t protocol_train_finished = 0;
 static volatile uint8_t protocol_test_finished = 0;
 static uint32_t current_epoch = 0;
+
+static volatile uint8_t protocol_running = 0;          // 1: processing active under PC control
+static volatile uint8_t protocol_ctrl_pause = 0;       // 1: request handling paused by PC
+
+static volatile uint32_t protocol_runtime_epochs = NN_EPOCHS; // runtime epoch limit
+
 
 uint8_t protocol_is_infer_finished(void)
 {
@@ -84,6 +98,8 @@ static volatile protocol_mode_t protocol_mode = PROTOCOL_MODE_TEST;
 #else
 static volatile protocol_mode_t protocol_mode = PROTOCOL_MODE_TRAIN;
 #endif
+
+static volatile protocol_mode_t protocol_control_mode = PROTOCOL_MODE_TRAIN;
 
 // FSM by byte: Start of frame - type - sequence - length - data - crc
 typedef enum {
@@ -145,6 +161,11 @@ void protocol_init(UART_HandleTypeDef *hlpuart)
 #else
     protocol_mode = PROTOCOL_MODE_TRAIN;
 #endif
+
+    protocol_running = 0;
+    protocol_ctrl_pause = 1;
+    protocol_control_mode = protocol_mode;
+    protocol_runtime_epochs = NN_EPOCHS;
 
     global_last_request_tick = HAL_GetTick();
 }
@@ -251,6 +272,57 @@ static void handle_message(void)
     	global_acknowledgement_status = 1;
 		global_ack_sequence_number = message_sequence;
 		global_flag_pending = 1;
+        return;
+    }
+
+    if (data_type == CODE_CTRL_START)
+    {
+        protocol_start_processing();
+        return;
+    }
+
+    if (data_type == CODE_CTRL_STOP)
+    {
+        protocol_stop_processing();
+        return;
+    }
+
+    if (data_type == CODE_CTRL_PAUSE)
+    {
+        protocol_pause_processing();
+        return;
+    }
+
+    if (data_type == CODE_CTRL_RESUME)
+    {
+        protocol_resume_processing();
+        return;
+    }
+
+    if (data_type == CODE_CTRL_MODE)
+    {
+        if (message_length >= 1)
+        {
+            protocol_set_control_mode(data[0]);
+            protocol_mode = protocol_control_mode;
+        }
+        return;
+    }
+
+    if (data_type == CODE_CTRL_EPOCHS)
+    {
+        if (message_length >= 2)
+        {
+            uint16_t epochs = (uint16_t)data[0] | ((uint16_t)data[1] << 8);
+            protocol_set_runtime_epochs(epochs);
+            current_epoch = 0;
+        }
+        return;
+    }
+
+    if (data_type == CODE_CTRL_STATUS)
+    {
+        protocol_send_status();
         return;
     }
 
@@ -409,8 +481,12 @@ void protocol_while(void)
         global_flag_pending = 0;
     }
 
-    // Idle = 1: do nothing
-    if (protocol_idle)
+    // Idle or not running: do nothing
+    if (protocol_idle || !protocol_running)
+        return;
+
+    // PC-level pause: do not auto-request
+    if (protocol_ctrl_pause)
         return;
 
     // Periodically Re-send Request if the data does not arrive
@@ -467,7 +543,7 @@ void protocol_after_infer_processed(void)
 {
     current_epoch++;
 
-    if (current_epoch < NN_EPOCHS)
+    if (current_epoch < protocol_runtime_epochs)
     {
         protocol_mode = PROTOCOL_MODE_TRAIN;
         global_sequence_number = 0;
@@ -504,6 +580,66 @@ uint8_t protocol_is_test_mode(void)
     return (protocol_mode == PROTOCOL_MODE_TEST) ? 1 : 0;
 }
 
+uint8_t protocol_is_running(void)
+{
+    return protocol_running;
+}
+
+void protocol_set_runtime_epochs(uint32_t epochs)
+{
+    protocol_runtime_epochs = epochs;
+}
+
+void protocol_set_control_mode(uint8_t mode)
+{
+    if (mode <= PROTOCOL_MODE_TEST)
+    {
+        protocol_control_mode = (protocol_mode_t)mode;
+    }
+}
+
+static void protocol_send_request_by_mode(void)
+{
+    if (protocol_mode == PROTOCOL_MODE_TRAIN)
+        protocol_send_req();
+    else if (protocol_mode == PROTOCOL_MODE_VAL)
+        protocol_send_infer_req();
+    else
+        protocol_send_test_req();
+}
+
+void protocol_start_processing(void)
+{
+    protocol_running = 1;
+    protocol_ctrl_pause = 0;
+    protocol_pause_request = 0;
+    current_epoch = 0;
+    protocol_mode = protocol_control_mode;
+    global_sequence_number = 0;
+    protocol_idle = 0;
+    protocol_send_request_by_mode();
+}
+
+void protocol_stop_processing(void)
+{
+    protocol_running = 0;
+    protocol_ctrl_pause = 1;
+    protocol_pause_request = 1;
+    protocol_set_idle(1);
+}
+
+void protocol_pause_processing(void)
+{
+    protocol_ctrl_pause = 1;
+}
+
+void protocol_resume_processing(void)
+{
+    protocol_ctrl_pause = 0;
+    protocol_pause_request = 0;
+    protocol_send_request_by_mode();
+}
+
 void protocol_send_test_req(void)
 {
     send_frame(CODE_REQUEST_TEST, global_sequence_number, NULL, 0);
@@ -517,6 +653,22 @@ void protocol_send_test_prediction(float probability, uint8_t pred)
     payload[4] = pred ? 1 : 0;
 
     send_frame(CODE_TEST_PRED, global_current_data_sequence, payload, 5);
+}
+
+void protocol_send_status(void)
+{
+    uint8_t payload[9];
+    payload[0] = (uint8_t)protocol_mode;
+    payload[1] = protocol_running ? 1 : 0;
+    payload[2] = protocol_ctrl_pause ? 1 : 0;
+    payload[3] = (uint8_t)(protocol_runtime_epochs & 0xFF);
+    payload[4] = (uint8_t)((protocol_runtime_epochs >> 8) & 0xFF);
+    payload[5] = (uint8_t)(current_epoch & 0xFF);
+    payload[6] = (uint8_t)((current_epoch >> 8) & 0xFF);
+    payload[7] = (uint8_t)((current_epoch >> 16) & 0xFF);
+    payload[8] = (uint8_t)((current_epoch >> 24) & 0xFF);
+
+    send_frame(CODE_CTRL_STATUS, global_sequence_number, payload, sizeof(payload));
 }
 
 void protocol_after_test_processed(void)

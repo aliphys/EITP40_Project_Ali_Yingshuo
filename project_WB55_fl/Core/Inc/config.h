@@ -15,7 +15,7 @@
 
 // Train - Validation - Train - Validation - Train ... Validation - Test
 // (Train + Validation) = 1 Epoch
-#define NN_EPOCHS   	12			// 0 = test only; suggested: 12 epochs
+#define NN_EPOCHS   	2			// 0 = test only; suggested: 12 epochs
 
 #define NN_IN			80
 #define NN_H1			40
@@ -27,8 +27,8 @@
 #define NN_FF_H3		20
 
 
-#define NN_LOAD_OLD_WEIGHTS_AT_BOOT     1	// 0 = Do not load (Random Initialization); 1 = load ONLY IF WEIGHTS_MAGIC and WEIGHTS_VERSION (in weights_flahs.c file) match
-#define NN_SAVE_NEW_WEIGHTS_AFTER_TRAIN 1	// 0 = Do not save; 1 = Save weights ONLY IF Validation Acc > Old Recorded one
+#define NN_LOAD_OLD_WEIGHTS_AT_BOOT     0	// 0 = Do not load (Random Initialization); 1 = load ONLY IF WEIGHTS_MAGIC and WEIGHTS_VERSION (in weights_flahs.c file) match
+#define NN_SAVE_NEW_WEIGHTS_AFTER_TRAIN 0	// 0 = Do not save; 1 = Save weights ONLY IF Validation Acc > Old Recorded one
 
 // NOTE: The flash pages saving weights are reserved and isolated in STM32WB55RGVX_FLASH.ld file (NVM_FLASH: ORIGIN = 0x08078000, LENGTH = 32K)
 //       Re-run the project will NOT erase the previous weights, as long as NN_SAVE_NEW_WEIGHTS_AFTER_TRAIN = 0
