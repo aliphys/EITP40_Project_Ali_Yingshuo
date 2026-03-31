@@ -1,0 +1,3 @@
+- The /pc directory has working code which is used with project_WB55. Consider this to be read only for inspiration. Do not edit the code in /pc, but copy and paste it to /pc_fl and edit it there.
+- The /pc_fl directory has working code which is used with project_WB55_fl project. We will edit the code step by step to make it work with federated learning.
+- make -j14 all is inaccessible to build the project, so we will use the build button in STM32CubeIDE to build the project and flash it to the board.
