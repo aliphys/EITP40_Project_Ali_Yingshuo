@@ -45,3 +45,5 @@ uint8_t protocol_is_running(void);
 uint8_t protocol_is_test_finished(void);
 void protocol_clear_test_finished(void);
 void protocol_after_test_processed(void);
+// Federated learning commands
+void protocol_send_fed_broadcast(void);

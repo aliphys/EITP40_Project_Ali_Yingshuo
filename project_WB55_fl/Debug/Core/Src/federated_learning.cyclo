@@ -1,0 +1,12 @@
+../Core/Src/federated_learning.c:19:8:fl_state_size	1
+../Core/Src/federated_learning.c:30:15:fl_state_words	1
+../Core/Src/federated_learning.c:35:6:fl_init	1
+../Core/Src/federated_learning.c:45:6:fl_set_role	1
+../Core/Src/federated_learning.c:50:11:fl_get_role	1
+../Core/Src/federated_learning.c:55:9:fl_is_server	1
+../Core/Src/federated_learning.c:60:9:fl_is_client	1
+../Core/Src/federated_learning.c:65:6:fl_reset_accumulator	1
+../Core/Src/federated_learning.c:72:5:fl_accumulate_weights	6
+../Core/Src/federated_learning.c:98:5:fl_commit_aggregation	5
+../Core/Src/federated_learning.c:131:5:fl_get_aggregated_state	4
+../Core/Src/federated_learning.c:144:10:fl_client_update_count	1

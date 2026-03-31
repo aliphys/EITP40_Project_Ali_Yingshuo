@@ -28,6 +28,7 @@
 #include "nn_ff.h"
 #include "config.h"
 #include "weights_flash.h"
+#include "federated_learning.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -124,7 +125,8 @@ int main(void)
   #if NN_LOAD_OLD_WEIGHTS_AT_BOOT
 	  (void)weights_flash_load();
   #endif
-
+  // Federated learning initial mode: unset, not active until host role assignment
+  fl_init(FL_ROLE_UNKNOWN, 2);
   // PC-driven mode: PC should send CODE_CTRL_START to begin processing
   protocol_stop_processing();
   /* USER CODE END 2 */

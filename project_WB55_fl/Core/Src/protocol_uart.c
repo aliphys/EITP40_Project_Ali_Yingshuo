@@ -13,6 +13,7 @@
 #include "config.h"
 #include "weights_flash.h"
 #include "nn.h"
+#include "federated_learning.h"
 
 #define CODE_START_OF_FRAME_0 0xAA
 #define CODE_START_OF_FRAME_1 0x55
@@ -38,6 +39,10 @@
 #define CODE_REQUEST_WEIGHTS   0x12	// PC -> STM32: Request weights
 #define CODE_WEIGHTS           0x13	// STM32 -> PC: Send weights
 #define CODE_SET_WEIGHTS       0x14	// PC -> STM32: Set weights
+#define CODE_FED_ROLE          0x15	// PC -> STM32: Federated role assignment (payload 1 byte: 0=client,1=server)
+#define CODE_FED_UPDATE        0x16	// PC -> STM32: Federated weight update packet (server only)
+#define CODE_FED_COMMIT        0x17	// PC -> STM32: Federated commit and average (server only)
+#define CODE_FED_BROADCAST     0x18	// PC -> STM32: Federated broadcast weights (client import)
 // label 1 byte + 80 float * 4 bytes
 #if USE_BACKPROP
 #define EXPECTED_LENGTH (4 * NN_IN + 1)
@@ -361,6 +366,67 @@ static void handle_message(void)
         {
             uint8_t status = 1; // error
             send_frame(CODE_ACKNOWLEDGEMENT, message_sequence, &status, 1);
+        }
+        return;
+    }
+
+    if (data_type == CODE_FED_ROLE)
+    {
+        if (message_length >= 1)
+        {
+            fl_role_t role = (data[0] == 1) ? FL_ROLE_SERVER : FL_ROLE_CLIENT;
+            fl_set_role(role);
+            fl_reset_accumulator();
+
+            uint8_t status = 0;
+            send_frame(CODE_ACKNOWLEDGEMENT, message_sequence, &status, 1);
+            protocol_send_status();
+        }
+        return;
+    }
+
+    if (data_type == CODE_FED_UPDATE)
+    {
+        uint8_t status = 0;
+        if (fl_is_server())
+        {
+            int ret = fl_accumulate_weights(data, message_length);
+            if (ret != 0)
+                status = 1;
+        }
+        send_frame(CODE_ACKNOWLEDGEMENT, message_sequence, &status, 1);
+        return;
+    }
+
+    if (data_type == CODE_FED_COMMIT)
+    {
+        uint8_t status = 0;
+        if (fl_is_server())
+        {
+            int ret = fl_commit_aggregation();
+            if (ret != 0)
+                status = 1;
+            else
+                protocol_send_fed_broadcast();
+        }
+        send_frame(CODE_ACKNOWLEDGEMENT, message_sequence, &status, 1);
+        return;
+    }
+
+    if (data_type == CODE_FED_BROADCAST)
+    {
+        if (message_length > 0 && message_length == fl_state_size())
+        {
+            if (nn_state_import(data, message_length))
+            {
+                uint8_t status = 0;
+                send_frame(CODE_ACKNOWLEDGEMENT, message_sequence, &status, 1);
+            }
+            else
+            {
+                uint8_t status = 1;
+                send_frame(CODE_ACKNOWLEDGEMENT, message_sequence, &status, 1);
+            }
         }
         return;
     }
@@ -717,6 +783,20 @@ void protocol_send_weights(void)
     uint8_t buffer[nn_state_size()];
     nn_state_export(buffer);
     send_frame(CODE_WEIGHTS, current_epoch, buffer, nn_state_size());
+}
+
+void protocol_send_fed_broadcast(void)
+{
+    size_t sz = fl_state_size();
+    if (sz == 0)
+        return;
+
+    // Use fixed buffer at maximum supported size (enough for nn and nn_ff)
+    uint8_t buffer[32768];
+    if (fl_get_aggregated_state(buffer, sz) != 0)
+        return;
+
+    send_frame(CODE_FED_BROADCAST, current_epoch, buffer, (uint16_t)sz);
 }
 
 void protocol_after_test_processed(void)

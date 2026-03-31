@@ -1,8 +1,8 @@
 ../Drivers/STM32WBxx_HAL_Driver/Inc/stm32wbxx_ll_bus.h:539:22:LL_AHB2_GRP1_EnableClock	1
-../Core/Src/main.c:83:5:main	16
-../Core/Src/main.c:313:6:SystemClock_Config	3
-../Core/Src/main.c:359:6:PeriphCommonClock_Config	2
-../Core/Src/main.c:383:13:MX_LPUART1_UART_Init	5
-../Core/Src/main.c:431:13:MX_GPIO_Init	1
-../Core/Src/main.c:463:6:HAL_GPIO_EXTI_Callback	4
-../Core/Src/main.c:475:6:Error_Handler	1
+../Core/Src/main.c:84:5:main	16
+../Core/Src/main.c:315:6:SystemClock_Config	3
+../Core/Src/main.c:361:6:PeriphCommonClock_Config	2
+../Core/Src/main.c:385:13:MX_LPUART1_UART_Init	5
+../Core/Src/main.c:433:13:MX_GPIO_Init	1
+../Core/Src/main.c:465:6:HAL_GPIO_EXTI_Callback	4
+../Core/Src/main.c:477:6:Error_Handler	1
